@@ -11,10 +11,12 @@ import (
 
 type client struct {
 	// TODO: implement this!
+	// Single connection of client
 	connID         int
 	seqNum         int
 	expectedSeqNum int
-	params         Params
+	params         *Params
+	conn           *lspnet.UDPConn
 }
 
 // NewClient creates, initiates, and returns a new client. This function
@@ -33,7 +35,7 @@ type client struct {
 func NewClient(hostport string, initialSeqNum int, params *Params) (Client, error) {
 	udpAddr, err := lspnet.ResolveUDPAddr("udp", hostport)
 	if err != nil {
-		return nil, errors.New("Resolve UDP Address")
+		return nil, errors.New("Resolve UDP Address failed")
 	}
 	// If laddr is nil, a local address is automatically chosen.
 	// If the IP field of raddr is nil or an unspecified IP address, the local system is assumed.
@@ -47,12 +49,28 @@ func NewClient(hostport string, initialSeqNum int, params *Params) (Client, erro
 	if err != nil {
 		return nil, errors.New("Connect request write failed")
 	}
-
-	return nil, errors.New("not yet implemented")
+	var receivedMsgBytes []byte
+	numBytes, err := udpConn.Read(receivedMsgBytes)
+	if err != nil {
+		return nil, errors.New("Connect request read failed")
+	}
+	var receivedMsg *Message
+	err = json.Unmarshal(receivedMsgBytes[:numBytes], receivedMsg)
+	if err != nil {
+		return nil, errors.New("json Unmarshal failed")
+	}
+	c := client{
+		connID:         receivedMsg.ConnID,
+		seqNum:         initialSeqNum + 1,
+		expectedSeqNum: receivedMsg.SeqNum + 1,
+		params:         NewParams(),
+		conn:           udpConn,
+	}
+	return &c, nil
 }
 
 func (c *client) ConnID() int {
-	return -1
+	return c.connID
 }
 
 func (c *client) Read() ([]byte, error) {
