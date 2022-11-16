@@ -65,6 +65,7 @@ func DialUDP(ntwk string, laddr, raddr *UDPAddr) (*UDPConn, error) {
 	if raddr != nil {
 		nraddr = raddr.toNet()
 	}
+
 	nconn, err := net.DialUDP(ntwk, nladdr, nraddr)
 	if err != nil {
 		return nil, err

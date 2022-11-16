@@ -13,6 +13,7 @@ import (
 	"github.com/cmu440/lspnet"
 )
 
+// flag = command line arguments
 var (
 	port               = flag.Int("port", 9999, "server port number")
 	host               = flag.String("host", "localhost", "server host address")

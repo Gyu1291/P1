@@ -10,7 +10,8 @@ import (
 // MsgType is an integer code describing an LSP message type.
 type MsgType int
 
-const (
+const ( // enum = multiple consts
+	// iota is initially 0. Following constants will be incremented
 	MsgConnect MsgType = iota // Sent by clients to make a connection w/ the server.
 	MsgData                   // Sent by clients/servers to send data.
 	MsgAck                    // Sent by clients/servers to ack connect/data msgs.
