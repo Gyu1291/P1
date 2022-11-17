@@ -5,6 +5,7 @@ package lsp
 import (
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/cmu440/lspnet"
 )
@@ -12,11 +13,13 @@ import (
 type client struct {
 	// TODO: implement this!
 	// Single connection of client
-	connID         int
-	seqNum         int
-	expectedSeqNum int
-	params         *Params
-	conn           *lspnet.UDPConn
+	connID        int
+	conn          *lspnet.UDPConn
+	established   bool
+	initialSeqNum int
+	connTimer     *time.Timer
+	params        *Params
+	drm           *dataRoutineManager
 }
 
 // NewClient creates, initiates, and returns a new client. This function
@@ -35,38 +38,83 @@ type client struct {
 func NewClient(hostport string, initialSeqNum int, params *Params) (Client, error) {
 	udpAddr, err := lspnet.ResolveUDPAddr("udp", hostport)
 	if err != nil {
-		return nil, errors.New("Resolve UDP Address failed")
+		return nil, err
 	}
 	// If laddr is nil, a local address is automatically chosen.
 	// If the IP field of raddr is nil or an unspecified IP address, the local system is assumed.
 	udpConn, err := lspnet.DialUDP("udp", nil, udpAddr)
 	if err != nil {
-		return nil, errors.New("UDP connection failed")
+		return nil, err
 	}
-	connectMsg := NewConnect(initialSeqNum)
-	connectMsgBytes, err := json.Marshal(connectMsg)
-	_, err = udpConn.Write(connectMsgBytes)
+	c := client{
+		conn:        udpConn,
+		established: false,
+		connTimer:   time.NewTimer(0),
+		params:      params,
+	}
+	c.connectRoutine()
+
+	return &c, nil
+}
+
+func (c *client) connectRoutine() error {
+	if c.established {
+		return errors.New("[Error]Already established")
+	}
+	connectMsg := NewConnect(c.initialSeqNum)
+	connectionlessEpochs := 0
+	c.connTimer.Reset(time.Duration(c.params.EpochMillis) * time.Millisecond)
+	err := c.sendMsgToNetwork(connectMsg)
 	if err != nil {
-		return nil, errors.New("Connect request write failed")
+		return err
 	}
+	for {
+		select {
+		case <-c.connTimer.C:
+			connectionlessEpochs++
+			if connectionlessEpochs >= c.params.EpochLimit {
+				return errors.New("[Error]ConnectionlessEpochs reach EpochLimit")
+			}
+			c.sendMsgToNetwork(connectMsg)
+			c.connTimer.Reset(time.Duration(c.params.EpochMillis) * time.Millisecond)
+		default:
+			msg, err := c.recvMsgFromNetwork()
+			if err != nil {
+				return err
+			}
+			if msg.Type == MsgAck {
+				c.connID = msg.ConnID
+				c.established = true
+				c.connTimer.Stop()
+			}
+		}
+	}
+}
+
+func (c *client) recvMsgFromNetwork() (*Message, error) {
 	var receivedMsgBytes []byte
-	numBytes, err := udpConn.Read(receivedMsgBytes)
+	numBytes, err := c.conn.Read(receivedMsgBytes)
 	if err != nil {
-		return nil, errors.New("Connect request read failed")
+		return nil, err
 	}
 	var receivedMsg *Message
 	err = json.Unmarshal(receivedMsgBytes[:numBytes], receivedMsg)
 	if err != nil {
-		return nil, errors.New("json Unmarshal failed")
+		return nil, err
 	}
-	c := client{
-		connID:         receivedMsg.ConnID,
-		seqNum:         initialSeqNum + 1,
-		expectedSeqNum: receivedMsg.SeqNum + 1,
-		params:         NewParams(),
-		conn:           udpConn,
+	return receivedMsg, nil
+}
+
+func (c *client) sendMsgToNetwork(msg *Message) error {
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		return err
 	}
-	return &c, nil
+	_, err = c.conn.Write(msgBytes)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *client) ConnID() int {
