@@ -3,7 +3,6 @@
 package lsp
 
 import (
-	"encoding/json"
 	"errors"
 	"time"
 
@@ -13,13 +12,9 @@ import (
 type client struct {
 	// TODO: implement this!
 	// Single connection of client
-	connID        int
-	conn          *lspnet.UDPConn
-	established   bool
-	initialSeqNum int
-	connTimer     *time.Timer
-	params        *Params
-	drm           *dataRoutineManager
+	connID    int
+	connTimer *time.Timer
+	drm       *dataRoutineManager
 }
 
 // NewClient creates, initiates, and returns a new client. This function
@@ -47,24 +42,21 @@ func NewClient(hostport string, initialSeqNum int, params *Params) (Client, erro
 		return nil, err
 	}
 	c := client{
-		conn:        udpConn,
-		established: false,
-		connTimer:   time.NewTimer(0),
-		params:      params,
+		connTimer: time.NewTimer(0),
+		drm:       newDataRoutineManager(udpConn, initialSeqNum, params),
 	}
 	c.connectRoutine()
-
 	return &c, nil
 }
 
 func (c *client) connectRoutine() error {
-	if c.established {
+	if c.drm.established {
 		return errors.New("[Error]Already established")
 	}
-	connectMsg := NewConnect(c.initialSeqNum)
+	connectMsg := NewConnect(c.drm.seqNum)
 	connectionlessEpochs := 0
-	c.connTimer.Reset(time.Duration(c.params.EpochMillis) * time.Millisecond)
-	err := c.sendMsgToNetwork(connectMsg)
+	c.connTimer.Reset(time.Duration(c.drm.params.EpochMillis) * time.Millisecond)
+	err := sendMsgToUDP(connectMsg, c.drm.conn)
 	if err != nil {
 		return err
 	}
@@ -72,49 +64,26 @@ func (c *client) connectRoutine() error {
 		select {
 		case <-c.connTimer.C:
 			connectionlessEpochs++
-			if connectionlessEpochs >= c.params.EpochLimit {
+			if connectionlessEpochs >= c.drm.params.EpochLimit {
 				return errors.New("[Error]ConnectionlessEpochs reach EpochLimit")
 			}
-			c.sendMsgToNetwork(connectMsg)
-			c.connTimer.Reset(time.Duration(c.params.EpochMillis) * time.Millisecond)
+			sendMsgToUDP(connectMsg, c.drm.conn)
+			c.connTimer.Reset(time.Duration(c.drm.params.EpochMillis) * time.Millisecond)
 		default:
-			msg, err := c.recvMsgFromNetwork()
+			msg, err := recvMsgFromUDP(c.drm.conn)
 			if err != nil {
 				return err
 			}
 			if msg.Type == MsgAck {
 				c.connID = msg.ConnID
-				c.established = true
+				c.drm.connID = msg.ConnID
+				c.drm.established = true
+				c.drm.seqNum++
+				c.drm.oldestUnackNum = msg.SeqNum + 1
 				c.connTimer.Stop()
 			}
 		}
 	}
-}
-
-func (c *client) recvMsgFromNetwork() (*Message, error) {
-	var receivedMsgBytes []byte
-	numBytes, err := c.conn.Read(receivedMsgBytes)
-	if err != nil {
-		return nil, err
-	}
-	var receivedMsg *Message
-	err = json.Unmarshal(receivedMsgBytes[:numBytes], receivedMsg)
-	if err != nil {
-		return nil, err
-	}
-	return receivedMsg, nil
-}
-
-func (c *client) sendMsgToNetwork(msg *Message) error {
-	msgBytes, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	_, err = c.conn.Write(msgBytes)
-	if err != nil {
-		return err
-	}
-	return nil
 }
 
 func (c *client) ConnID() int {
