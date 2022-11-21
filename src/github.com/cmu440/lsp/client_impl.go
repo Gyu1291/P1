@@ -12,9 +12,10 @@ import (
 type client struct {
 	// TODO: implement this!
 	// Single connection of client
-	connID    int
-	connTimer *time.Timer
-	drm       *dataRoutineManager
+	connID                   int
+	connTimer                *time.Timer
+	drm                      *dataRoutineManager
+	readAsyncCompleteChannel chan bool
 }
 
 // NewClient creates, initiates, and returns a new client. This function
@@ -81,6 +82,8 @@ func (c *client) connectRoutine() error {
 				c.drm.seqNum++
 				c.drm.oldestUnackNum = msg.SeqNum + 1
 				c.connTimer.Stop()
+				go c.drm.mainRoutine()
+				go c.readRoutine()
 			}
 		}
 	}
@@ -91,15 +94,39 @@ func (c *client) ConnID() int {
 }
 
 func (c *client) Read() ([]byte, error) {
-	// TODO: remove this line when you are ready to begin implementing this method.
-	select {} // Blocks indefinitely.
+
+	select { // Blocks indefinitely.
+	case readByte := <-c.drm.lspToAppChannel:
+		go c.readRoutine()
+		return readByte, nil
+	}
 	return nil, errors.New("not yet implemented")
 }
 
 func (c *client) Write(payload []byte) error {
-	return errors.New("not yet implemented")
+	c.drm.appToLspChannel <- payload
+	return nil
 }
 
 func (c *client) Close() error {
 	return errors.New("not yet implemented")
+}
+
+func (c *client) readRoutine() {
+	go c.readAsynchronously()
+	for {
+		select {
+		case <-c.readAsyncCompleteChannel:
+			go c.readAsynchronously()
+		}
+	}
+}
+
+func (c *client) readAsynchronously() {
+	msg, err := recvMsgFromUDP(c.drm.conn)
+	if err != nil {
+
+	}
+	c.drm.udpToLspChannel <- msg
+	c.readAsyncCompleteChannel <- true
 }

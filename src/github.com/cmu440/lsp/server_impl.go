@@ -43,7 +43,7 @@ func NewServer(port int, params *Params) (Server, error) {
 
 func (s *server) Read() (int, []byte, error) {
 	
-	select {} // Blocks indefinitely.
+	select {}
 	return -1, nil, errors.New("not yet implemented")
 }
 
@@ -57,4 +57,8 @@ func (s *server) CloseConn(connId int) error {
 
 func (s *server) Close() error {
 	return errors.New("not yet implemented")
+}
+
+func (s *server) readRoutine(){
+
 }
