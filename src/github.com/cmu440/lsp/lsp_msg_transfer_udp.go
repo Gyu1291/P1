@@ -20,6 +20,20 @@ func recvMsgFromUDP(conn *lspnet.UDPConn) (*Message, error) {
 	return receivedMsg, nil
 }
 
+func recvMsgWithAddrFromUDP(conn *lspnet.UDPConn) (*Message, *lspnet.UDPAddr, error) {
+	var receivedMsgBytes []byte
+	numBytes, addr, err := conn.ReadFromUDP(receivedMsgBytes)
+	if err != nil {
+		return nil, nil, err
+	}
+	var receivedMsg *Message
+	err = json.Unmarshal(receivedMsgBytes[:numBytes], receivedMsg)
+	if err != nil {
+		return nil, nil, err
+	}
+	return receivedMsg, addr, nil
+}
+
 func sendMsgToUDP(msg *Message, conn *lspnet.UDPConn) error {
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
