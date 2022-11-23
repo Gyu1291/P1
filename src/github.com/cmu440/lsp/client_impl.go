@@ -12,10 +12,9 @@ import (
 type client struct {
 	// TODO: implement this!
 	// Single connection of client
-	connID                   int
-	connTimer                *time.Timer
-	drm                      *dataRoutineManager
-	readAsyncCompleteChannel chan bool
+	connID    int
+	connTimer *time.Timer
+	drm       *dataRoutineManager
 }
 
 // NewClient creates, initiates, and returns a new client. This function
@@ -84,6 +83,7 @@ func (c *client) connectRoutine() error {
 				c.connTimer.Stop()
 				go c.drm.mainRoutine()
 				go c.readRoutine()
+				return nil
 			}
 		}
 	}
@@ -95,38 +95,36 @@ func (c *client) ConnID() int {
 
 func (c *client) Read() ([]byte, error) {
 
-	select { // Blocks indefinitely.
+	select { // Blocks until msg from server arrives
+	case err := <-c.drm.errorSignalChannel:
+		return nil, err
 	case readByte := <-c.drm.lspToAppChannel:
 		go c.readRoutine()
 		return readByte, nil
 	}
-	return nil, errors.New("not yet implemented")
+
 }
 
 func (c *client) Write(payload []byte) error {
-	c.drm.appToLspChannel <- payload
+	select { // Non-blocking
+	case err := <-c.drm.errorSignalChannel:
+		return err
+	default:
+		c.drm.appToLspChannel <- payload
+	}
 	return nil
 }
 
 func (c *client) Close() error {
-	return errors.New("not yet implemented")
+	c.drm.closingStartChannel <- true
+	select { // Blocks until all pending msgs from server are acked
+	case err := <-c.drm.errorSignalChannel:
+		return err
+	case <-c.drm.closingCompleteChannel:
+		return nil
+	}
 }
 
 func (c *client) readRoutine() {
-	go c.readAsynchronously()
-	for {
-		select {
-		case <-c.readAsyncCompleteChannel:
-			go c.readAsynchronously()
-		}
-	}
-}
 
-func (c *client) readAsynchronously() {
-	msg, err := recvMsgFromUDP(c.drm.conn)
-	if err != nil {
-
-	}
-	c.drm.udpToLspChannel <- msg
-	c.readAsyncCompleteChannel <- true
 }
