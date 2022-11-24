@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/cmu440/lspnet"
@@ -35,13 +36,15 @@ type dataRoutineManager struct {
 	appToLspChannel chan []byte
 	lspToAppChannel chan []byte
 
-	udpToLspChannel    chan *Message
-	errorSignalChannel chan error
+	udpToLspChannel         chan *Message
+	errorSignalInLspChannel chan error
+	errorLspToAppChannel    chan error
 
 	closingStartChannel    chan bool
 	closingCompleteChannel chan bool
 
-	forcefulClosingChannel chan bool
+	quickCloseLspToAppChannel chan error
+	quickCloseAppToLspChannel chan bool
 }
 
 type backOffState struct {
@@ -52,20 +55,20 @@ type backOffState struct {
 
 func newDataRoutineManager(conn *lspnet.UDPConn, seqNum int, params *Params) *dataRoutineManager {
 	drm := dataRoutineManager{
-		conn:                   conn,
-		established:            false,
-		seqNum:                 seqNum,
-		slidingWindow:          make([]*Message, 0, params.WindowSize),
-		currentBackOff:         make(map[*Message]*backOffState),
-		timer:                  time.NewTimer(0),
-		params:                 params,
-		appToLspChannel:        make(chan []byte, 10),
-		lspToAppChannel:        make(chan []byte, 10),
-		udpToLspChannel:        make(chan *Message, 1),
-		errorSignalChannel:     make(chan error),
-		closingStartChannel:    make(chan bool),
-		closingCompleteChannel: make(chan bool),
-		forcefulClosingChannel: make(chan bool),
+		conn:                      conn,
+		established:               false,
+		seqNum:                    seqNum,
+		slidingWindow:             make([]*Message, 0, params.WindowSize),
+		currentBackOff:            make(map[*Message]*backOffState),
+		timer:                     time.NewTimer(0),
+		params:                    params,
+		appToLspChannel:           make(chan []byte, 10),
+		lspToAppChannel:           make(chan []byte, 10),
+		udpToLspChannel:           make(chan *Message, 1),
+		errorSignalInLspChannel:   make(chan error),
+		closingStartChannel:       make(chan bool),
+		closingCompleteChannel:    make(chan bool),
+		quickCloseLspToAppChannel: make(chan error),
 	}
 	return &drm
 }
@@ -74,6 +77,11 @@ func (d *dataRoutineManager) mainRoutine() {
 	d.timer.Reset(time.Duration(d.params.EpochMillis) * time.Millisecond)
 	for {
 		select {
+		case err := <-d.errorSignalInLspChannel:
+			d.errorLspToAppChannel <- err
+			return
+		case <-d.quickCloseAppToLspChannel:
+			return
 		case <-d.closingStartChannel:
 			d.timer.Stop()
 			for { // Blocks until all pending msgs from the other side are acked
@@ -95,7 +103,7 @@ func (d *dataRoutineManager) mainRoutine() {
 			d.updateBackOff()
 			d.unreceivedEpochs++
 			if d.unreceivedEpochs >= d.params.EpochLimit {
-				d.forcefulClosingChannel <- true
+				d.quickCloseLspToAppChannel <- errors.New("Reach EpochLimit")
 				return
 			}
 			d.timer.Reset(time.Duration(d.params.EpochMillis) * time.Millisecond)
@@ -105,7 +113,7 @@ func (d *dataRoutineManager) mainRoutine() {
 				msgToSend := NewData(d.connID, d.seqNum, len(databyteToSend), databyteToSend,
 					CalculateChecksum(d.connID, d.seqNum, len(databyteToSend), databyteToSend))
 				d.seqNum++
-				go d.sendMsgToUDPAsync(msgToSend, false)
+				d.sendMsgLspToUdp(msgToSend, false)
 			}
 		case readMsg := <-d.udpToLspChannel:
 			d.unreceivedEpochs = 0
@@ -127,7 +135,7 @@ func (d *dataRoutineManager) processMsgDataLspToApp(msg *Message) {
 		d.receivingWindow[msg.SeqNum-d.oldestUnackNum] = msg
 		if msg.SeqNum > d.oldestUnackNum {
 			ack := NewAck(d.connID, msg.SeqNum)
-			go d.sendMsgToUDPAsync(ack, false)
+			d.sendMsgLspToUdp(ack, false)
 		} else {
 			// msg.Seq == d.oldestUnackNum
 			// In-order delivery to app layer
@@ -138,7 +146,7 @@ func (d *dataRoutineManager) processMsgDataLspToApp(msg *Message) {
 				} else {
 					msgBytes, err := json.Marshal(msg)
 					if err != nil {
-						d.errorSignalChannel <- err
+						d.errorSignalInLspChannel <- err
 					}
 					d.lspToAppChannel <- msgBytes
 					d.oldestUnackNum++
@@ -152,7 +160,7 @@ func (d *dataRoutineManager) processMsgDataLspToApp(msg *Message) {
 				d.receivingWindow[i] = nil
 			}
 			cAck := NewCAck(d.connID, d.oldestUnackNum-1)
-			go d.sendMsgToUDPAsync(cAck, false)
+			d.sendMsgLspToUdp(cAck, false)
 		}
 	}
 }
@@ -192,10 +200,10 @@ func (d *dataRoutineManager) processMsgCAckLspToApp(msg *Message) {
 	}
 }
 
-func (d *dataRoutineManager) sendMsgToUDPAsync(msgToSend *Message, isRetx bool) {
+func (d *dataRoutineManager) sendMsgLspToUdp(msgToSend *Message, isRetx bool) {
 	err := sendMsgToUDP(msgToSend, d.conn)
 	if err != nil {
-		d.errorSignalChannel <- err
+		d.errorSignalInLspChannel <- err
 		return
 	}
 	// MsgData First transmit (Not retx)
@@ -213,7 +221,7 @@ func (d *dataRoutineManager) updateBackOff() {
 			backOff.currentEpoch++
 			if backOff.currentEpoch == backOff.nextRetransmit {
 				// Retransmit
-				go d.sendMsgToUDPAsync(m, true)
+				d.sendMsgLspToUdp(m, true)
 				transmitted = true
 				if backOff.currentBackOff == 0 {
 					backOff.currentBackOff = 1
@@ -234,5 +242,5 @@ func (d *dataRoutineManager) updateBackOff() {
 
 func (d *dataRoutineManager) sendHeartBeat() {
 	ack := NewAck(d.connID, 0)
-	go d.sendMsgToUDPAsync(ack, true)
+	d.sendMsgLspToUdp(ack, true)
 }

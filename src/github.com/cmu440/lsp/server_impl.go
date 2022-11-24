@@ -15,12 +15,15 @@ type server struct {
 	params     *Params
 
 	hostPortToConnIDs map[string]int
+	connIDsTohostPort map[int]string
 	connIDs           []int
 	connIDToDrm       map[int]*dataRoutineManager
 
 	serverMsgUdpToLspChannel  chan *serverReadMsg
 	serverByteLspToAppChannel chan *serverReadByteFromLsp
 	serverErrorChannel        chan error
+	serverErrorToUserChannel  chan error
+	oneConnErrorToUserChannel chan *oneConnErrorInfo
 }
 
 type serverReadMsg struct {
@@ -31,6 +34,11 @@ type serverReadMsg struct {
 type serverReadByteFromLsp struct {
 	readByte []byte
 	connID   int
+}
+
+type oneConnErrorInfo struct {
+	connID int
+	err    error
 }
 
 // NewServer creates, initiates, and returns a new server. This function should
@@ -60,6 +68,8 @@ func NewServer(port int, params *Params) (Server, error) {
 		serverMsgUdpToLspChannel:  make(chan *serverReadMsg),
 		serverByteLspToAppChannel: make(chan *serverReadByteFromLsp, 10),
 		serverErrorChannel:        make(chan error),
+		serverErrorToUserChannel:  make(chan error),
+		oneConnErrorToUserChannel: make(chan *oneConnErrorInfo),
 		params:                    params,
 	}
 	go s.readRoutine()
@@ -68,14 +78,28 @@ func NewServer(port int, params *Params) (Server, error) {
 }
 
 func (s *server) Read() (int, []byte, error) {
-	select {
+	select { // Blocking
+	case err := <-s.serverErrorToUserChannel:
+		return -1, nil, err
+	case oneConnErr := <-s.oneConnErrorToUserChannel:
+		return oneConnErr.connID, nil, oneConnErr.err
 	case readData := <-s.serverByteLspToAppChannel:
 		return readData.connID, readData.readByte, nil
 	}
 }
 
 func (s *server) Write(connId int, payload []byte) error {
-	return errors.New("not yet implemented")
+	select { // Non-blocking
+	case err := <-s.serverErrorToUserChannel:
+		return err
+	default:
+		drm, exists := s.connIDToDrm[connId]
+		if !exists {
+			return errors.New("Connection ID Not Found")
+		}
+		drm.appToLspChannel <- payload
+		return nil
+	}
 }
 
 func (s *server) CloseConn(connId int) error {
@@ -92,7 +116,7 @@ func (s *server) readFromUDPRoutine() {
 		default:
 			msg, addr, err := recvMsgWithAddrFromUDP(s.listenConn)
 			if err != nil {
-				s.serverErrorChannel <- err
+				continue
 			}
 			srm := serverReadMsg{
 				msg:  msg,
@@ -103,25 +127,65 @@ func (s *server) readFromUDPRoutine() {
 	}
 }
 
+// One routine for one server
 // Demultiplexing from multiple lsp clients
+// Also deal with removing one connection info
 func (s *server) readFromLSPRoutine() {
 	for {
 		for _, id := range s.connIDs {
 			drm := s.connIDToDrm[id]
 			select {
+			case err := <-drm.errorLspToAppChannel:
+				// After mainRoutine of drm is terminated
+				s.removeOneConnInfo(id)
+				s.oneConnErrorToUserChannel <- &oneConnErrorInfo{err: err, connID: id}
+			case err := <-drm.quickCloseLspToAppChannel:
+				// After mainRoutine of drm is terminated
+				s.removeOneConnInfo(id)
+				s.oneConnErrorToUserChannel <- &oneConnErrorInfo{err: err, connID: id}
 			case readByte := <-drm.lspToAppChannel:
 				s.serverByteLspToAppChannel <- &serverReadByteFromLsp{
 					readByte: readByte,
 					connID:   id,
 				}
+			default:
+				continue
 			}
 		}
 	}
 }
 
+func (s *server) removeOneConnInfo(connID int) {
+	addrStr := s.connIDsTohostPort[connID]
+	delete(s.connIDsTohostPort, connID)
+	delete(s.hostPortToConnIDs, addrStr)
+	index := 0
+	for i, id := range s.connIDs {
+		if id == connID {
+			index = i
+		}
+	}
+	switch index {
+	case 0:
+		s.connIDs = s.connIDs[1:]
+	case len(s.connIDs) - 1:
+		s.connIDs = s.connIDs[:index]
+	default:
+		s.connIDs = append(s.connIDs[:index], s.connIDs[index+1:]...)
+	}
+}
+
+// One routine per one connection -> Multiple routines for one server
 func (s *server) readRoutine() {
 	for {
 		select {
+		case err := <-s.serverErrorChannel:
+			for _, id := range s.connIDs {
+				drm := s.connIDToDrm[id]
+				drm.quickCloseAppToLspChannel <- true
+				s.removeOneConnInfo(id)
+			}
+			s.serverErrorToUserChannel <- err
 		case readMsg := <-s.serverMsgUdpToLspChannel:
 			msg := readMsg.msg
 			addrStr := readMsg.addr.String()
@@ -129,6 +193,7 @@ func (s *server) readRoutine() {
 			case MsgConnect:
 				if _, exists := s.hostPortToConnIDs[addrStr]; !exists {
 					s.hostPortToConnIDs[addrStr] = s.newConnID
+					s.connIDsTohostPort[s.newConnID] = addrStr
 					s.connIDs = append(s.connIDs, s.newConnID)
 					s.connIDToDrm[s.newConnID] = newDataRoutineManager(s.listenConn, s.newConnID*1000, s.params)
 					drm := s.connIDToDrm[s.newConnID]
@@ -140,9 +205,7 @@ func (s *server) readRoutine() {
 					}
 					s.newConnID++
 				}
-			case MsgData:
-			case MsgAck:
-			case MsgCAck:
+			case MsgCAck, MsgAck, MsgData:
 				if connID, exists := s.hostPortToConnIDs[addrStr]; exists && msg.ConnID == connID {
 					drm := s.connIDToDrm[connID]
 					drm.udpToLspChannel <- msg

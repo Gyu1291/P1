@@ -10,11 +10,11 @@ import (
 )
 
 type client struct {
-	// TODO: implement this!
 	// Single connection of client
-	connID    int
-	connTimer *time.Timer
-	drm       *dataRoutineManager
+	connID                      int
+	connTimer                   *time.Timer
+	drm                         *dataRoutineManager
+	errorFromReadRoutineChannel chan error
 }
 
 // NewClient creates, initiates, and returns a new client. This function
@@ -96,10 +96,9 @@ func (c *client) ConnID() int {
 func (c *client) Read() ([]byte, error) {
 
 	select { // Blocks until msg from server arrives
-	case err := <-c.drm.errorSignalChannel:
+	case err := <-c.errorFromReadRoutineChannel:
 		return nil, err
 	case readByte := <-c.drm.lspToAppChannel:
-		go c.readRoutine()
 		return readByte, nil
 	}
 
@@ -107,7 +106,7 @@ func (c *client) Read() ([]byte, error) {
 
 func (c *client) Write(payload []byte) error {
 	select { // Non-blocking
-	case err := <-c.drm.errorSignalChannel:
+	case err := <-c.errorFromReadRoutineChannel:
 		return err
 	default:
 		c.drm.appToLspChannel <- payload
@@ -118,7 +117,7 @@ func (c *client) Write(payload []byte) error {
 func (c *client) Close() error {
 	c.drm.closingStartChannel <- true
 	select { // Blocks until all pending msgs from server are acked
-	case err := <-c.drm.errorSignalChannel:
+	case err := <-c.errorFromReadRoutineChannel:
 		return err
 	case <-c.drm.closingCompleteChannel:
 		return nil
