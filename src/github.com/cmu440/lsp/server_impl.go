@@ -5,6 +5,7 @@ package lsp
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/cmu440/lspnet"
 )
@@ -68,6 +69,7 @@ func NewServer(port int, params *Params) (Server, error) {
 		newConnID:                       1,
 		hostPortToConnIDs:               make(map[string]int),
 		connIDs:                         make([]int, 0),
+		connIDsTohostPort:               make(map[int]string),
 		connIDToDrm:                     make(map[int]*dataRoutineManager),
 		serverMsgUdpToLspChannel:        make(chan *serverReadMsg),
 		serverByteLspToAppChannel:       make(chan *serverReadByteFromLsp, 10),
@@ -169,6 +171,7 @@ func (s *server) readFromUDPRoutine() {
 func (s *server) readFromLSPRoutine() {
 	for {
 		for _, id := range s.connIDs {
+			time.Sleep(time.Millisecond)
 			drm := s.connIDToDrm[id]
 			select {
 			case <-s.closeReadFromLspRoutineChannel:
@@ -246,7 +249,7 @@ func (s *server) readRoutine() {
 					drm.connID = s.newConnID
 					go drm.mainRoutine()
 					ack := NewAck(drm.connID, drm.seqNum)
-					err := sendMsgToUDP(ack, drm.conn)
+					err := SendMsgToUDPWithAddr(ack, drm.conn, readMsg.addr)
 					if err != nil {
 						s.serverErrorInLspChannel <- err
 					}

@@ -50,7 +50,7 @@ type UDPConn struct {
 }
 
 // Read implements the Conn Read method.
-func (c *UDPConn) Read(b []byte) (n int, err error) {
+func (c *UDPConn) Read(b *[]byte) (n int, err error) {
 	var buffer [2000]byte
 	for {
 		n, err = c.nconn.Read(buffer[0:])
@@ -59,7 +59,7 @@ func (c *UDPConn) Read(b []byte) (n int, err error) {
 				log.Printf("DROPPING read packet of length %d\n", n)
 			}
 		} else {
-			copy(b, buffer[0:])
+			*b = buffer[0:n]
 			break
 		}
 	}
@@ -69,7 +69,7 @@ func (c *UDPConn) Read(b []byte) (n int, err error) {
 // ReadFromUDP reads a UDP packet from c, copying the payload into b.
 // It returns the number of bytes copied into b and the return address that
 // was on the packet.
-func (c *UDPConn) ReadFromUDP(b []byte) (n int, addr *UDPAddr, err error) {
+func (c *UDPConn) ReadFromUDP(b *[]byte) (n int, addr *UDPAddr, err error) {
 	var naddr *net.UDPAddr
 	var buffer [2000]byte
 	for {
@@ -79,7 +79,7 @@ func (c *UDPConn) ReadFromUDP(b []byte) (n int, addr *UDPAddr, err error) {
 				log.Printf("DROPPING read packet of length %d\n", n)
 			}
 		} else {
-			copy(b, buffer[0:])
+			*b = buffer[0:n]
 			if naddr != nil {
 				addr = &UDPAddr{naddr: naddr}
 			}

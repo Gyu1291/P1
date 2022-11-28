@@ -4,6 +4,7 @@ package lsp
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/cmu440/lspnet"
@@ -74,6 +75,7 @@ func (c *client) connectRoutine() error {
 			c.connTimer.Reset(time.Duration(c.drm.params.EpochMillis) * time.Millisecond)
 		default:
 			msg, err := recvMsgFromUDP(c.drm.conn)
+			fmt.Println("msg from server : ", &msg)
 			if err != nil {
 				return err
 			}
@@ -86,6 +88,7 @@ func (c *client) connectRoutine() error {
 				c.connTimer.Stop()
 				go c.drm.mainRoutine()
 				go c.readRoutine()
+				fmt.Println("Connect Routine of client terminated")
 				return nil
 			}
 		}

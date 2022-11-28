@@ -2,17 +2,19 @@ package lsp
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/cmu440/lspnet"
 )
 
 func recvMsgFromUDP(conn *lspnet.UDPConn) (*Message, error) {
 	var receivedMsgBytes []byte
-	numBytes, err := conn.Read(receivedMsgBytes)
+	numBytes, err := conn.Read(&receivedMsgBytes)
 	if err != nil {
 		return nil, err
 	}
 	var receivedMsg *Message
+	fmt.Println("ReceivedMsgBytes : ", receivedMsgBytes)
 	err = json.Unmarshal(receivedMsgBytes[:numBytes], receivedMsg)
 	if err != nil {
 		return nil, err
@@ -22,11 +24,12 @@ func recvMsgFromUDP(conn *lspnet.UDPConn) (*Message, error) {
 
 func recvMsgWithAddrFromUDP(conn *lspnet.UDPConn) (*Message, *lspnet.UDPAddr, error) {
 	var receivedMsgBytes []byte
-	numBytes, addr, err := conn.ReadFromUDP(receivedMsgBytes)
+	receivedMsgBytes = make([]byte, 0, 100)
+	numBytes, addr, err := conn.ReadFromUDP(&receivedMsgBytes)
 	if err != nil {
 		return nil, nil, err
 	}
-	var receivedMsg *Message
+	receivedMsg := &Message{}
 	err = json.Unmarshal(receivedMsgBytes[:numBytes], receivedMsg)
 	if err != nil {
 		return nil, nil, err
@@ -40,6 +43,18 @@ func sendMsgToUDP(msg *Message, conn *lspnet.UDPConn) error {
 		return err
 	}
 	_, err = conn.Write(msgBytes)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func SendMsgToUDPWithAddr(msg *Message, conn *lspnet.UDPConn, addr *lspnet.UDPAddr) error {
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	_, err = conn.WriteToUDP(msgBytes, addr)
 	if err != nil {
 		return err
 	}

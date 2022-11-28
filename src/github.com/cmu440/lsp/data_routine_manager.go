@@ -3,6 +3,7 @@ package lsp
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/cmu440/lspnet"
@@ -238,6 +239,7 @@ func (d *dataRoutineManager) updateBackOff() {
 		}
 	}
 	if !transmitted {
+		fmt.Println("Send heart beat")
 		d.sendHeartBeat()
 	}
 }
