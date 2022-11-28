@@ -74,21 +74,22 @@ func (c *client) connectRoutine() error {
 			sendMsgToUDP(connectMsg, c.drm.conn)
 			c.connTimer.Reset(time.Duration(c.drm.params.EpochMillis) * time.Millisecond)
 		default:
-			msg, err := recvMsgFromUDP(c.drm.conn)
-			fmt.Println("msg from server : ", &msg)
+			msg, addr, err := recvMsgWithAddrFromUDP(c.drm.conn)
+			fmt.Println("msg from server : ", msg)
 			if err != nil {
 				return err
 			}
 			if msg.Type == MsgAck {
 				c.connID = msg.ConnID
 				c.drm.connID = msg.ConnID
+				c.drm.addr = addr
+				c.drm.isServer = false
 				c.drm.established = true
 				c.drm.seqNum++
 				c.drm.oldestUnackNum = msg.SeqNum + 1
 				c.connTimer.Stop()
 				go c.drm.mainRoutine()
 				go c.readRoutine()
-				fmt.Println("Connect Routine of client terminated")
 				return nil
 			}
 		}
@@ -100,7 +101,6 @@ func (c *client) ConnID() int {
 }
 
 func (c *client) Read() ([]byte, error) {
-
 	select { // Blocks until msg from server arrives
 	case err := <-c.clientErrorLspToAppChannel:
 		return nil, err
@@ -116,8 +116,8 @@ func (c *client) Write(payload []byte) error {
 		return err
 	default:
 		c.drm.appToLspChannel <- payload
+		return nil
 	}
-	return nil
 }
 
 func (c *client) Close() error {
@@ -138,6 +138,10 @@ func (c *client) readRoutine() {
 			c.clientErrorLspToAppChannel <- err
 			return
 		case <-c.closeReadRoutineChannel:
+			return
+		case err := <-c.drm.quickCloseLspToAppChannel:
+			fmt.Println(err)
+			c.clientErrorLspToAppChannel <- err
 			return
 		default:
 			msg, _, err := recvMsgWithAddrFromUDP(c.drm.conn)

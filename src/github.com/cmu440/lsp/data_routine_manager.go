@@ -3,7 +3,6 @@ package lsp
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/cmu440/lspnet"
@@ -13,8 +12,10 @@ const receivingWindowSize int = 10
 
 type dataRoutineManager struct {
 	// connection management
+	isServer         bool
 	connID           int
 	conn             *lspnet.UDPConn
+	addr             *lspnet.UDPAddr
 	established      bool
 	unreceivedEpochs int
 
@@ -65,13 +66,13 @@ func newDataRoutineManager(conn *lspnet.UDPConn, seqNum int, params *Params) *da
 		params:                    params,
 		appToLspChannel:           make(chan []byte, 10),
 		lspToAppChannel:           make(chan []byte, 10),
-		udpToLspChannel:           make(chan *Message, 1),
-		errorSignalInLspChannel:   make(chan error),
-		errorLspToAppChannel:      make(chan error),
-		closingStartChannel:       make(chan bool),
-		closingCompleteChannel:    make(chan bool),
-		quickCloseLspToAppChannel: make(chan error),
-		quickCloseAppToLspChannel: make(chan bool),
+		udpToLspChannel:           make(chan *Message, 10),
+		errorSignalInLspChannel:   make(chan error, 1),
+		errorLspToAppChannel:      make(chan error, 1),
+		closingStartChannel:       make(chan bool, 1),
+		closingCompleteChannel:    make(chan bool, 1),
+		quickCloseLspToAppChannel: make(chan error, 1),
+		quickCloseAppToLspChannel: make(chan bool, 1),
 	}
 	return &drm
 }
@@ -204,7 +205,14 @@ func (d *dataRoutineManager) processMsgCAckLspToApp(msg *Message) {
 }
 
 func (d *dataRoutineManager) sendMsgLspToUdp(msgToSend *Message, isRetx bool) {
-	err := sendMsgToUDP(msgToSend, d.conn)
+	var err error
+	if d.isServer {
+		err = sendMsgToUDPWithAddr(msgToSend, d.conn, d.addr)
+		// fmt.Println("Server sendMsgLspToUdp : ", msgToSend)
+	} else {
+		err = sendMsgToUDP(msgToSend, d.conn)
+		// fmt.Println("Client sendMsgLspToUdp : ", msgToSend)
+	}
 	if err != nil {
 		d.errorSignalInLspChannel <- err
 		return
@@ -239,7 +247,6 @@ func (d *dataRoutineManager) updateBackOff() {
 		}
 	}
 	if !transmitted {
-		fmt.Println("Send heart beat")
 		d.sendHeartBeat()
 	}
 }

@@ -5,7 +5,6 @@ package lsp
 import (
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/cmu440/lspnet"
 )
@@ -171,26 +170,27 @@ func (s *server) readFromUDPRoutine() {
 func (s *server) readFromLSPRoutine() {
 	for {
 		for _, id := range s.connIDs {
-			time.Sleep(time.Millisecond)
 			drm := s.connIDToDrm[id]
-			select {
-			case <-s.closeReadFromLspRoutineChannel:
-				return
-			case err := <-drm.errorLspToAppChannel:
-				// After mainRoutine of drm is terminated
-				s.removeOneConnInfo(id)
-				s.connErrorLspToAppChannel <- &oneConnErrorInfo{err: err, connID: id}
-			case err := <-drm.quickCloseLspToAppChannel:
-				// After mainRoutine of drm is terminated
-				s.removeOneConnInfo(id)
-				s.connErrorLspToAppChannel <- &oneConnErrorInfo{err: err, connID: id}
-			case readByte := <-drm.lspToAppChannel:
-				s.serverByteLspToAppChannel <- &serverReadByteFromLsp{
-					readByte: readByte,
-					connID:   id,
+			if drm != nil {
+				select {
+				case <-s.closeReadFromLspRoutineChannel:
+					return
+				case err := <-drm.errorLspToAppChannel:
+					// After mainRoutine of drm is terminated
+					s.removeOneConnInfo(id)
+					s.connErrorLspToAppChannel <- &oneConnErrorInfo{err: err, connID: id}
+				case err := <-drm.quickCloseLspToAppChannel:
+					// After mainRoutine of drm is terminated
+					s.removeOneConnInfo(id)
+					s.connErrorLspToAppChannel <- &oneConnErrorInfo{err: err, connID: id}
+				case readByte := <-drm.lspToAppChannel:
+					s.serverByteLspToAppChannel <- &serverReadByteFromLsp{
+						readByte: readByte,
+						connID:   id,
+					}
+				default:
+					continue
 				}
-			default:
-				continue
 			}
 		}
 	}
@@ -247,9 +247,11 @@ func (s *server) readRoutine() {
 					s.connIDToDrm[s.newConnID] = newDataRoutineManager(s.listenConn, s.newConnID*1000, s.params)
 					drm := s.connIDToDrm[s.newConnID]
 					drm.connID = s.newConnID
+					drm.addr = readMsg.addr
+					drm.isServer = true
 					go drm.mainRoutine()
 					ack := NewAck(drm.connID, drm.seqNum)
-					err := SendMsgToUDPWithAddr(ack, drm.conn, readMsg.addr)
+					err := sendMsgToUDPWithAddr(ack, drm.conn, readMsg.addr)
 					if err != nil {
 						s.serverErrorInLspChannel <- err
 					}
