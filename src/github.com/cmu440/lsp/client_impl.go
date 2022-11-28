@@ -11,10 +11,11 @@ import (
 
 type client struct {
 	// Single connection of client
-	connID                      int
-	connTimer                   *time.Timer
-	drm                         *dataRoutineManager
-	errorFromReadRoutineChannel chan error
+	connID                     int
+	connTimer                  *time.Timer
+	drm                        *dataRoutineManager
+	clientErrorLspToAppChannel chan error
+	closeReadRoutineChannel    chan bool
 }
 
 // NewClient creates, initiates, and returns a new client. This function
@@ -42,8 +43,10 @@ func NewClient(hostport string, initialSeqNum int, params *Params) (Client, erro
 		return nil, err
 	}
 	c := client{
-		connTimer: time.NewTimer(0),
-		drm:       newDataRoutineManager(udpConn, initialSeqNum, params),
+		connTimer:                  time.NewTimer(0),
+		drm:                        newDataRoutineManager(udpConn, initialSeqNum, params),
+		clientErrorLspToAppChannel: make(chan error),
+		closeReadRoutineChannel:    make(chan bool),
 	}
 	c.connectRoutine()
 	return &c, nil
@@ -96,7 +99,7 @@ func (c *client) ConnID() int {
 func (c *client) Read() ([]byte, error) {
 
 	select { // Blocks until msg from server arrives
-	case err := <-c.errorFromReadRoutineChannel:
+	case err := <-c.clientErrorLspToAppChannel:
 		return nil, err
 	case readByte := <-c.drm.lspToAppChannel:
 		return readByte, nil
@@ -106,7 +109,7 @@ func (c *client) Read() ([]byte, error) {
 
 func (c *client) Write(payload []byte) error {
 	select { // Non-blocking
-	case err := <-c.errorFromReadRoutineChannel:
+	case err := <-c.clientErrorLspToAppChannel:
 		return err
 	default:
 		c.drm.appToLspChannel <- payload
@@ -117,13 +120,28 @@ func (c *client) Write(payload []byte) error {
 func (c *client) Close() error {
 	c.drm.closingStartChannel <- true
 	select { // Blocks until all pending msgs from server are acked
-	case err := <-c.errorFromReadRoutineChannel:
+	case err := <-c.clientErrorLspToAppChannel:
 		return err
 	case <-c.drm.closingCompleteChannel:
+		c.closeReadRoutineChannel <- true
 		return nil
 	}
 }
 
 func (c *client) readRoutine() {
-
+	for {
+		select {
+		case err := <-c.drm.errorLspToAppChannel:
+			c.clientErrorLspToAppChannel <- err
+			return
+		case <-c.closeReadRoutineChannel:
+			return
+		default:
+			msg, _, err := recvMsgWithAddrFromUDP(c.drm.conn)
+			if err != nil {
+				continue
+			}
+			c.drm.udpToLspChannel <- msg
+		}
+	}
 }

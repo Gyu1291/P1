@@ -66,9 +66,11 @@ func newDataRoutineManager(conn *lspnet.UDPConn, seqNum int, params *Params) *da
 		lspToAppChannel:           make(chan []byte, 10),
 		udpToLspChannel:           make(chan *Message, 1),
 		errorSignalInLspChannel:   make(chan error),
+		errorLspToAppChannel:      make(chan error),
 		closingStartChannel:       make(chan bool),
 		closingCompleteChannel:    make(chan bool),
 		quickCloseLspToAppChannel: make(chan error),
+		quickCloseAppToLspChannel: make(chan bool),
 	}
 	return &drm
 }

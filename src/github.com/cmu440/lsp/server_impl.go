@@ -19,11 +19,15 @@ type server struct {
 	connIDs           []int
 	connIDToDrm       map[int]*dataRoutineManager
 
-	serverMsgUdpToLspChannel  chan *serverReadMsg
-	serverByteLspToAppChannel chan *serverReadByteFromLsp
-	serverErrorChannel        chan error
-	serverErrorToUserChannel  chan error
-	oneConnErrorToUserChannel chan *oneConnErrorInfo
+	serverMsgUdpToLspChannel        chan *serverReadMsg
+	serverByteLspToAppChannel       chan *serverReadByteFromLsp
+	serverErrorInLspChannel         chan error
+	serverErrorLspToAppChannel      chan error
+	connErrorLspToAppChannel        chan *oneConnErrorInfo
+	closeReadFromUdpRoutineChannel  chan bool
+	closeReadFromLspRoutineChannel  chan bool
+	closeReadRoutineChannel         chan bool
+	closeCompleteReadRoutineChannel chan bool
 }
 
 type serverReadMsg struct {
@@ -60,28 +64,33 @@ func NewServer(port int, params *Params) (Server, error) {
 		return nil, err
 	}
 	s := server{
-		listenConn:                listenConn,
-		newConnID:                 1,
-		hostPortToConnIDs:         make(map[string]int),
-		connIDs:                   make([]int, 0),
-		connIDToDrm:               make(map[int]*dataRoutineManager),
-		serverMsgUdpToLspChannel:  make(chan *serverReadMsg),
-		serverByteLspToAppChannel: make(chan *serverReadByteFromLsp, 10),
-		serverErrorChannel:        make(chan error),
-		serverErrorToUserChannel:  make(chan error),
-		oneConnErrorToUserChannel: make(chan *oneConnErrorInfo),
-		params:                    params,
+		listenConn:                      listenConn,
+		newConnID:                       1,
+		hostPortToConnIDs:               make(map[string]int),
+		connIDs:                         make([]int, 0),
+		connIDToDrm:                     make(map[int]*dataRoutineManager),
+		serverMsgUdpToLspChannel:        make(chan *serverReadMsg),
+		serverByteLspToAppChannel:       make(chan *serverReadByteFromLsp, 10),
+		serverErrorInLspChannel:         make(chan error),
+		serverErrorLspToAppChannel:      make(chan error),
+		connErrorLspToAppChannel:        make(chan *oneConnErrorInfo),
+		closeReadRoutineChannel:         make(chan bool),
+		closeCompleteReadRoutineChannel: make(chan bool),
+		closeReadFromUdpRoutineChannel:  make(chan bool),
+		closeReadFromLspRoutineChannel:  make(chan bool),
+		params:                          params,
 	}
 	go s.readRoutine()
 	go s.readFromUDPRoutine()
+	go s.readFromLSPRoutine()
 	return &s, nil
 }
 
 func (s *server) Read() (int, []byte, error) {
 	select { // Blocking
-	case err := <-s.serverErrorToUserChannel:
+	case err := <-s.serverErrorLspToAppChannel:
 		return -1, nil, err
-	case oneConnErr := <-s.oneConnErrorToUserChannel:
+	case oneConnErr := <-s.connErrorLspToAppChannel:
 		return oneConnErr.connID, nil, oneConnErr.err
 	case readData := <-s.serverByteLspToAppChannel:
 		return readData.connID, readData.readByte, nil
@@ -90,7 +99,7 @@ func (s *server) Read() (int, []byte, error) {
 
 func (s *server) Write(connId int, payload []byte) error {
 	select { // Non-blocking
-	case err := <-s.serverErrorToUserChannel:
+	case err := <-s.serverErrorLspToAppChannel:
 		return err
 	default:
 		drm, exists := s.connIDToDrm[connId]
@@ -103,16 +112,43 @@ func (s *server) Write(connId int, payload []byte) error {
 }
 
 func (s *server) CloseConn(connId int) error {
-	return errors.New("not yet implemented")
+	drm := s.connIDToDrm[connId]
+	drm.closingStartChannel <- true
+	select {
+	case err := <-s.serverErrorLspToAppChannel:
+		return err
+	case <-drm.closingCompleteChannel:
+		s.removeOneConnInfo(connId)
+		return nil
+	}
 }
 
 func (s *server) Close() error {
-	return errors.New("not yet implemented")
+	for _, drm := range s.connIDToDrm {
+		drm.closingCompleteChannel <- true
+	}
+	for _, drm := range s.connIDToDrm {
+		select {
+		case err := <-s.serverErrorLspToAppChannel:
+			return err
+		case <-drm.closingCompleteChannel:
+			s.removeOneConnInfo(drm.connID)
+		}
+	}
+	s.closeReadRoutineChannel <- true
+	select {
+	case err := <-s.serverErrorLspToAppChannel:
+		return err
+	case <-s.closeCompleteReadRoutineChannel:
+		return nil
+	}
 }
 
 func (s *server) readFromUDPRoutine() {
 	for {
 		select {
+		case <-s.closeReadFromUdpRoutineChannel:
+			return
 		default:
 			msg, addr, err := recvMsgWithAddrFromUDP(s.listenConn)
 			if err != nil {
@@ -135,14 +171,16 @@ func (s *server) readFromLSPRoutine() {
 		for _, id := range s.connIDs {
 			drm := s.connIDToDrm[id]
 			select {
+			case <-s.closeReadFromLspRoutineChannel:
+				return
 			case err := <-drm.errorLspToAppChannel:
 				// After mainRoutine of drm is terminated
 				s.removeOneConnInfo(id)
-				s.oneConnErrorToUserChannel <- &oneConnErrorInfo{err: err, connID: id}
+				s.connErrorLspToAppChannel <- &oneConnErrorInfo{err: err, connID: id}
 			case err := <-drm.quickCloseLspToAppChannel:
 				// After mainRoutine of drm is terminated
 				s.removeOneConnInfo(id)
-				s.oneConnErrorToUserChannel <- &oneConnErrorInfo{err: err, connID: id}
+				s.connErrorLspToAppChannel <- &oneConnErrorInfo{err: err, connID: id}
 			case readByte := <-drm.lspToAppChannel:
 				s.serverByteLspToAppChannel <- &serverReadByteFromLsp{
 					readByte: readByte,
@@ -179,13 +217,21 @@ func (s *server) removeOneConnInfo(connID int) {
 func (s *server) readRoutine() {
 	for {
 		select {
-		case err := <-s.serverErrorChannel:
+		case <-s.closeReadRoutineChannel:
+			s.closeReadFromUdpRoutineChannel <- true
+			s.closeReadFromLspRoutineChannel <- true
+			s.closeCompleteReadRoutineChannel <- true
+			return
+		case err := <-s.serverErrorInLspChannel:
 			for _, id := range s.connIDs {
 				drm := s.connIDToDrm[id]
 				drm.quickCloseAppToLspChannel <- true
 				s.removeOneConnInfo(id)
 			}
-			s.serverErrorToUserChannel <- err
+			s.closeReadFromUdpRoutineChannel <- true
+			s.closeReadFromLspRoutineChannel <- true
+			s.serverErrorLspToAppChannel <- err
+			return
 		case readMsg := <-s.serverMsgUdpToLspChannel:
 			msg := readMsg.msg
 			addrStr := readMsg.addr.String()
@@ -197,11 +243,12 @@ func (s *server) readRoutine() {
 					s.connIDs = append(s.connIDs, s.newConnID)
 					s.connIDToDrm[s.newConnID] = newDataRoutineManager(s.listenConn, s.newConnID*1000, s.params)
 					drm := s.connIDToDrm[s.newConnID]
+					drm.connID = s.newConnID
 					go drm.mainRoutine()
 					ack := NewAck(drm.connID, drm.seqNum)
 					err := sendMsgToUDP(ack, drm.conn)
 					if err != nil {
-						s.serverErrorChannel <- err
+						s.serverErrorInLspChannel <- err
 					}
 					s.newConnID++
 				}
