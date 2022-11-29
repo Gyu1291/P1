@@ -121,6 +121,7 @@ func (c *client) Write(payload []byte) error {
 }
 
 func (c *client) Close() error {
+	fmt.Println("Call client.Close")
 	c.drm.closingStartChannel <- true
 	select { // Blocks until all pending msgs from server are acked
 	case err := <-c.clientErrorLspToAppChannel:

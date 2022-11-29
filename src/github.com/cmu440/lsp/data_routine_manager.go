@@ -2,12 +2,13 @@ package lsp
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/cmu440/lspnet"
 )
 
-const receivingWindowSize int = 10
+const receivingWindowSize int = 1000
 
 type dataRoutineManager struct {
 	// connection management
@@ -81,9 +82,11 @@ func (d *dataRoutineManager) mainRoutine() {
 	for {
 		select {
 		case err := <-d.errorSignalInLspChannel:
+			fmt.Println("Signal to errorSignalInLspChannel in mainRoutine")
 			d.errorLspToAppChannel <- err
 			return
 		case <-d.quickCloseAppToLspChannel:
+			fmt.Println("Signal to quickCloseAppToLspChannel in mainRoutine")
 			return
 		case <-d.closingStartChannel:
 			d.timer.Stop()
@@ -106,7 +109,7 @@ func (d *dataRoutineManager) mainRoutine() {
 			d.updateBackOff()
 			d.unreceivedEpochs++
 			if d.unreceivedEpochs >= d.params.EpochLimit {
-				d.quickCloseLspToAppChannel <- errors.New("Reach EpochLimit")
+				d.quickCloseLspToAppChannel <- errors.New("reach EpochLimit")
 				return
 			}
 			d.timer.Reset(time.Duration(d.params.EpochMillis) * time.Millisecond)

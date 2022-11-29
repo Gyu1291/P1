@@ -5,7 +5,7 @@ package lsp
 import (
 	"errors"
 	"fmt"
-	"time"
+	"sync"
 
 	"github.com/cmu440/lspnet"
 )
@@ -19,6 +19,7 @@ type server struct {
 	connIDsTohostPort map[int]string
 	connIDs           []int
 	connIDToDrm       map[int]*dataRoutineManager
+	mutex             sync.Mutex
 
 	serverMsgUdpToLspChannel        chan *serverReadMsg
 	serverByteLspToAppChannel       chan *serverReadByteFromLsp
@@ -104,9 +105,11 @@ func (s *server) Write(connId int, payload []byte) error {
 	case err := <-s.serverErrorLspToAppChannel:
 		return err
 	default:
+		s.mutex.Lock()
 		drm, exists := s.connIDToDrm[connId]
+		s.mutex.Unlock()
 		if !exists {
-			return errors.New("Connection ID Not Found")
+			return errors.New("connection ID Not Found")
 		}
 		drm.appToLspChannel <- payload
 		return nil
@@ -114,7 +117,9 @@ func (s *server) Write(connId int, payload []byte) error {
 }
 
 func (s *server) CloseConn(connId int) error {
+	s.mutex.Lock()
 	drm := s.connIDToDrm[connId]
+	s.mutex.Unlock()
 	drm.closingStartChannel <- true
 	select {
 	case err := <-s.serverErrorLspToAppChannel:
@@ -126,6 +131,7 @@ func (s *server) CloseConn(connId int) error {
 }
 
 func (s *server) Close() error {
+	fmt.Println("Call server.Close()")
 	for _, drm := range s.connIDToDrm {
 		drm.closingCompleteChannel <- true
 	}
@@ -171,7 +177,9 @@ func (s *server) readFromUDPRoutine() {
 func (s *server) readFromLSPRoutine() {
 	for {
 		for _, id := range s.connIDs {
+			s.mutex.Lock()
 			drm := s.connIDToDrm[id]
+			s.mutex.Unlock()
 			if drm != nil {
 				select {
 				case <-s.closeReadFromLspRoutineChannel:
@@ -190,7 +198,7 @@ func (s *server) readFromLSPRoutine() {
 						connID:   id,
 					}
 				default:
-					time.Sleep(time.Millisecond * 100)
+					continue
 				}
 			}
 		}
@@ -198,9 +206,11 @@ func (s *server) readFromLSPRoutine() {
 }
 
 func (s *server) removeOneConnInfo(connID int) {
+	s.mutex.Lock()
 	addrStr := s.connIDsTohostPort[connID]
 	delete(s.connIDsTohostPort, connID)
 	delete(s.hostPortToConnIDs, addrStr)
+	s.mutex.Unlock()
 	index := 0
 	for i, id := range s.connIDs {
 		if id == connID {
@@ -242,10 +252,12 @@ func (s *server) readRoutine() {
 			switch msg.Type {
 			case MsgConnect:
 				if _, exists := s.hostPortToConnIDs[addrStr]; !exists {
+					s.mutex.Lock()
 					s.hostPortToConnIDs[addrStr] = s.newConnID
 					s.connIDsTohostPort[s.newConnID] = addrStr
-					s.connIDs = append(s.connIDs, s.newConnID)
 					s.connIDToDrm[s.newConnID] = newDataRoutineManager(s.listenConn, s.newConnID*1000, s.params)
+					s.mutex.Unlock()
+					s.connIDs = append(s.connIDs, s.newConnID)
 					drm := s.connIDToDrm[s.newConnID]
 					drm.connID = s.newConnID
 					drm.addr = readMsg.addr
@@ -262,10 +274,12 @@ func (s *server) readRoutine() {
 					fmt.Println("Server connected to ", addrStr, " with connect msg : ", msg)
 				}
 			case MsgCAck, MsgAck, MsgData:
+				s.mutex.Lock()
 				if connID, exists := s.hostPortToConnIDs[addrStr]; exists && msg.ConnID == connID {
 					drm := s.connIDToDrm[connID]
 					drm.udpToLspChannel <- msg
 				}
+				s.mutex.Unlock()
 			}
 		}
 	}

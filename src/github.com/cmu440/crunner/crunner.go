@@ -67,6 +67,11 @@ func runClient(cli lsp.Client) {
 		if _, err := fmt.Scan(&s); err != nil {
 			return
 		}
+		if s == "close" {
+			cli.Close()
+			fmt.Println("Client closed")
+			return
+		}
 		// Send message to server.
 		if err := cli.Write([]byte(s)); err != nil {
 			fmt.Printf("Client %d failed to write to server: %s\n", cli.ConnID(), err)
