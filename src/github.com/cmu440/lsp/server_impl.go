@@ -5,6 +5,7 @@ package lsp
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/cmu440/lspnet"
 )
@@ -189,7 +190,7 @@ func (s *server) readFromLSPRoutine() {
 						connID:   id,
 					}
 				default:
-					continue
+					time.Sleep(time.Millisecond * 100)
 				}
 			}
 		}
@@ -249,13 +250,16 @@ func (s *server) readRoutine() {
 					drm.connID = s.newConnID
 					drm.addr = readMsg.addr
 					drm.isServer = true
+					drm.oldestUnackNum = msg.SeqNum + 1
 					go drm.mainRoutine()
 					ack := NewAck(drm.connID, drm.seqNum)
 					err := sendMsgToUDPWithAddr(ack, drm.conn, readMsg.addr)
 					if err != nil {
 						s.serverErrorInLspChannel <- err
 					}
+					drm.seqNum++
 					s.newConnID++
+					fmt.Println("Server connected to ", addrStr, " with connect msg : ", msg)
 				}
 			case MsgCAck, MsgAck, MsgData:
 				if connID, exists := s.hostPortToConnIDs[addrStr]; exists && msg.ConnID == connID {

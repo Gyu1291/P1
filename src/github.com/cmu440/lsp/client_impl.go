@@ -90,6 +90,7 @@ func (c *client) connectRoutine() error {
 				c.connTimer.Stop()
 				go c.drm.mainRoutine()
 				go c.readRoutine()
+				fmt.Println("Connected to ", addr.String(), "with msg : ", msg)
 				return nil
 			}
 		}
@@ -107,7 +108,6 @@ func (c *client) Read() ([]byte, error) {
 	case readByte := <-c.drm.lspToAppChannel:
 		return readByte, nil
 	}
-
 }
 
 func (c *client) Write(payload []byte) error {

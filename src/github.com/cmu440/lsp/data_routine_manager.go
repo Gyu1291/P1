@@ -1,7 +1,6 @@
 package lsp
 
 import (
-	"encoding/json"
 	"errors"
 	"time"
 
@@ -148,11 +147,7 @@ func (d *dataRoutineManager) processMsgDataLspToApp(msg *Message) {
 				if m == nil {
 					break
 				} else {
-					msgBytes, err := json.Marshal(msg)
-					if err != nil {
-						d.errorSignalInLspChannel <- err
-					}
-					d.lspToAppChannel <- msgBytes
+					d.lspToAppChannel <- msg.Payload
 					d.oldestUnackNum++
 					index++
 				}
@@ -218,7 +213,7 @@ func (d *dataRoutineManager) sendMsgLspToUdp(msgToSend *Message, isRetx bool) {
 		return
 	}
 	// MsgData First transmit (Not retx)
-	if !isRetx {
+	if !isRetx && msgToSend.Type == MsgData {
 		d.slidingWindow = append(d.slidingWindow, msgToSend)
 		d.currentBackOff[msgToSend] = &backOffState{currentEpoch: 0, currentBackOff: 0, nextRetransmit: 1}
 	}
